@@ -1,9 +1,11 @@
 use "cli"
 use "files"
+use "time"
 use sql = "sqlite3"
 
 primitive OK
 primitive Internal
+  fun name(): String => "internal error"
 type Error is (
     Internal
   | sql.Error
@@ -37,13 +39,23 @@ class Card
     n = n'
     ef = ef'
 
+  new manually(id': I64, front': String, back': String,
+      tested': I64, i': I32, n': I32, ef': F64) =>
+    id = id'
+    front = front'
+    back = back'
+    tested = tested'
+    i = i'
+    n = n'
+    ef = ef'
+
 class CardsDB
   let db: sql.DB
 
-  new trn create(db': sql.DB iso) =>
+  new create(db': sql.DB iso) =>
     db = consume db'
 
-  fun insert(card: Card ref): (OK | Error) =>
+  fun ref insert(card: Card): (OK | Error) =>
     let stmt = try
       db.prepare("""
         INSERT INTO cards
@@ -87,7 +99,7 @@ class CardsDB
     | let e: sql.Error => e
     end
 
-  fun update_card(card: Card): (OK | Error) =>
+  fun ref update_card(card: Card): (OK | Error) =>
     let id =
       match card.id
       | None => return Internal
@@ -135,6 +147,47 @@ class CardsDB
     | let e: sql.Error => e
     end
 
+  fun read_all_cards(): (Array[Card] iso^ | Error) =>
+    let stmt = try
+      db.prepare("""
+        SELECT id, front, back, tested, i, n, ef
+        FROM cards
+      """)?
+    else
+      return Internal
+    end
+
+    let stmt': sql.Stmt iso =
+      match stmt
+      | let s: sql.Stmt => consume s
+      | let e: sql.Error => return e
+      end
+
+    recover
+      let res = Array[Card]
+      while true do
+        match stmt'.step()
+        | sql.Done => break res
+        | let e: sql.Error => break e
+        | sql.Row =>
+          if stmt'.column_count() != 7 then
+            break Internal
+          end
+          res.push(Card.manually(
+            stmt'.column_int64_unsafe(0),
+            stmt'.column_text_unsafe(1),
+            stmt'.column_text_unsafe(2),
+            stmt'.column_int64_unsafe(3),
+            stmt'.column_int_unsafe(4),
+            stmt'.column_int_unsafe(5),
+            stmt'.column_double_unsafe(6)))
+          res
+        end
+      else
+        res
+      end
+    end
+
 class OptionParser
   let spec: CommandSpec box
   let parser: CommandParser box
@@ -180,6 +233,9 @@ class OptionParser
   fun print_help(os: OutStream tag) =>
     Help.general(spec).print_help(os)
 
+primitive Test
+primitive Add
+type SubCommand is (Test | Add)
 class Options
   let cmd: Command
 
@@ -187,7 +243,14 @@ class Options
     cmd = cmd'
 
   fun print_help(os: OutStream tag) =>
-      Help.general(cmd.spec()).print_help(os)
+    Help.general(cmd.spec()).print_help(os)
+
+  fun sub(): SubCommand? =>
+    match cmd.spec().name()
+    | "test" => Test
+    | "add" => Add
+    else error
+    end
 
   fun db_path(): String =>
     cmd.option("file").string()
@@ -206,19 +269,17 @@ actor Main
       return
     end
     let opts = match parser.parse(env.args, env.vars)
-    | let o: Options => o
-    | let h: CommandHelp =>
-      h.print_help(env.err)
-      env.exitcode(0)
-      return
-    | let e: SyntaxError =>
-      env.err.print(e.string())
-      parser.print_help(env.err)
-      env.exitcode(1)
-      return
+      | let o: Options => o
+      | let h: CommandHelp =>
+        h.print_help(env.err)
+        env.exitcode(0)
+        return
+      | let e: SyntaxError =>
+        env.err.print(e.string())
+        parser.print_help(env.err)
+        env.exitcode(1)
+        return
     end
-
-    env.err.print("DB path: " + opts.db_path())
 
     let db = try
       open_db("cards.db")?
@@ -226,45 +287,24 @@ actor Main
       return
     end
 
-    let c = Card("What year was Y2K expected to occur?", "2000")
-    match db.insert(c)
-    | Internal =>
-      env.err.print("internal error when inserting a card...")
+    try
+      match (opts.sub()?, consume db)
+      | (Add, let db': CardsDB iso) => add(consume db', opts)
+      | (Test, let db': CardsDB iso) => test(consume db', opts)
+      end
+    else
+      env.err.print("internal error: unrecognised command")
       env.exitcode(1)
-      return
-    | let err: sql.Error =>
-      env.err.print("couldn't insert a card into the DB (" + err.name() + ")")
-      env.exitcode(1)
-      return
     end
 
-    env.err.print("Ready to rock and roll with card #" + c.id.string())
-
-    c.front = "I lied"
-    c.back = "I lied"
-    c.ef = 10
-    c.i = 10000000
-    c.n = 10000
-    match db.update_card(c)
-    | Internal =>
-      env.err.print("internal error when inserting a card...")
-      env.exitcode(1)
-      return
-    | let err: sql.Error =>
-      env.err.print("couldn't insert a card into the DB (" + err.name() + ")")
-      env.exitcode(1)
-      return
-    end
-
-  fun open_db(dbpath: String): CardsDB? =>
-    let db =
-      match sql.OpenDB(FilePath(FileAuth(env.root), dbpath))
+  fun open_db(dbpath: String): CardsDB iso? =>
+    let db = match sql.OpenDB(FilePath(FileAuth(env.root), dbpath))
       | let db: sql.DB iso => consume db
       else
         env.err.print("unable to open db " + dbpath)
         env.exitcode(1)
         error
-      end
+    end
 
     let create_stmt = try
       db.prepare("""
@@ -286,14 +326,13 @@ actor Main
       error
     end
 
-    let create_stmt' =
-      match create_stmt
+    let create_stmt' = match create_stmt
       | let s: sql.Stmt => consume s
       | let e: sql.Error =>
         env.err.print("unable to create the cards db (" + e.name() + ")")
         env.exitcode(1)
         error
-      end
+    end
 
     match create_stmt'.step()
     | sql.Done => (consume create_stmt').finalise()
@@ -303,4 +342,40 @@ actor Main
       error
     end
 
-    CardsDB(consume db)
+    recover CardsDB(consume db) end
+
+  fun add(db: CardsDB iso, opts: Options) =>
+    None
+
+  fun test(db: CardsDB iso, opts: Options) =>
+    let cards' = match db.read_all_cards()
+      | let cs: Array[Card] iso => consume cs
+      | Internal =>
+        env.err.print("couldn't read cards from database")
+        env.exitcode(1)
+        return
+      | let e: sql.Error =>
+        env.err.print(
+          "couldn't read all cards from database (" + e.name() + ")")
+        env.exitcode(1)
+        return
+    end
+
+    let cs = get_cards_to_test(consume cards')
+    let orch = TestingOrchestrator(consume db, consume cs,
+      Terminal(env.input, env.out, env.err, env.exitcode))
+    orch.test()
+
+  fun get_cards_to_test(cards: Array[Card] iso): Array[Card] iso^ =>
+    (let secs, _) = Time.now()
+    recover
+      let res = Array[Card]
+      for c in (consume cards).values() do
+        if (secs <= c.tested) or
+          (((secs - c.tested) / (60*60*24)) >= c.i.i64())
+        then
+          res.push(c)
+        end
+      end
+      res
+    end

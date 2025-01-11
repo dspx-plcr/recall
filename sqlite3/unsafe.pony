@@ -11,8 +11,11 @@ use @sqlite3_bind_int64[NativeInt](stmt: _PStmt, col: NativeInt, num: I64)
 use @sqlite3_bind_text[NativeInt](stmt: _PStmt, col: NativeInt,
   text: Pointer[U8] tag, len: NativeInt, destructor: Pointer[None])
 use @sqlite3_step[NativeInt](stmt: _PStmt)
+use @sqlite3_column_count[NativeInt](stmt: _PStmt)
+use @sqlite3_column_double[F64](stmt: _PStmt, col: NativeInt)
 use @sqlite3_column_int[NativeInt](stmt: _PStmt, col: NativeInt)
 use @sqlite3_column_int64[I64](stmt: _PStmt, col: NativeInt)
+use @sqlite3_column_text[Pointer[U8]](stmt: _PStmt, col: NativeInt)
 use @sqlite3_finalize[NativeInt](stmt: _PStmt)
 use @sqlite3_close_v2[NativeInt](db: _PConn)
 
@@ -157,11 +160,20 @@ class iso Stmt
       ToError.fromInt(res)
     end
 
+  fun column_count(): NativeInt =>
+    @sqlite3_column_count(_handle)
+
+  fun column_double_unsafe(col: NativeInt): F64 =>
+    @sqlite3_column_double(_handle, col)
+
   fun column_int_unsafe(col: NativeInt): NativeInt =>
     @sqlite3_column_int(_handle, col)
 
   fun column_int64_unsafe(col: NativeInt): I64 =>
     @sqlite3_column_int64(_handle, col)
+
+  fun column_text_unsafe(col: NativeInt): String =>
+    recover String.copy_cstring(@sqlite3_column_text(_handle, col)) end
 
   // TODO: Can OK be returned here?
   fun step(): (Done | Row | Error) =>
