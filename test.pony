@@ -41,19 +41,6 @@ class iso WaitForInputNotifier is InputNotify
       orch.prompt_for_score()
     end
 
-class val Terminal
-  let input: InputStream
-  let output: OutStream
-  let err: OutStream
-  let exit: {(I32)} val
-
-  new create(input': InputStream, output': OutStream, err': OutStream,
-      exit': {(I32)} val) =>
-    input = input'
-    output = output'
-    err = err'
-    exit = exit'
-
 actor TestingOrchestrator
   let db: CardsDB
   var cards: Seq[Card]
