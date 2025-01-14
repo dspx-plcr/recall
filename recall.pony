@@ -196,7 +196,13 @@ actor Main
         env.exitcode(1)
       end
     elseif opts.multi() != "" then
-      None
+      match OpenFile(FilePath(FileAuth(env.root), opts.multi()))
+      | let f: File => AddingFileParser(consume db, f)
+      else
+        // TODO: better error reporting
+        env.err.print("couldn't open file " + opts.multi())
+        env.exitcode(1)
+      end
     else
       opts.print_help(env.err)
     end
@@ -216,6 +222,7 @@ actor Main
     end
 
     let cs = get_cards_to_test(consume cards')
+    /* TODO: provide n as a parameter */
     let orch = TestingOrchestrator(consume db, consume cs,
       Terminal(env.input, env.out, env.err, env.exitcode))
     orch.test()

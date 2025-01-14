@@ -13,6 +13,7 @@ class Card
     id = None
     front = front'
     back = back'
+    /* TODO: int min? */
     tested = 0
     i = 0
     n = 0
@@ -45,6 +46,8 @@ class CardsDB
     db = consume db'
 
   fun ref insert(card: Card): (OK | Error) =>
+    /* TODO: strip spaces from front and back matter */
+    /* TODO: Or maybe that should be done on input??? */
     let stmt = try
       db.prepare("""
         INSERT INTO cards

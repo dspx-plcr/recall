@@ -54,6 +54,7 @@ actor TestingOrchestrator
     term = term'
 
   be test() =>
+    /* TODO: Cap if n is set */
     let card' = match card
       | None =>
         try
@@ -69,7 +70,7 @@ actor TestingOrchestrator
 
     card = card'
     term.output.write("\t" + card'.front)
-    term.input(WaitForInputNotifier(recover this end))
+    term.input(WaitForInputNotifier(this))
 
   be prompt_for_score() =>
     let card' = match card
@@ -88,7 +89,7 @@ actor TestingOrchestrator
       4: Correct, after some hesitation
       5: Correct with perfect recall
       """)
-    term.input(GetScoreNotifier(recover this end))
+    term.input(GetScoreNotifier(this))
 
   be parse_score(score: String iso) =>
     let c = match card
