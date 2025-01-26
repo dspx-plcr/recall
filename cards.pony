@@ -45,6 +45,13 @@ class CardsDB
   new create(db': sql.DB iso) =>
     db = consume db'
 
+  fun ref insert_both(side1: String, side2: String): (OK | Error) =>
+    match insert(Card(side1, side2))
+    | OK => None
+    | let e: Error => return e
+    end
+    insert(Card(side2, side1))
+
   fun ref insert(card: Card): (OK | Error) =>
     /* TODO: strip spaces from front and back matter */
     /* TODO: Or maybe that should be done on input??? */

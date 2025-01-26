@@ -17,7 +17,7 @@ class val Terminal
   let err: OutStream
   let exit: {(I32)} val
 
-  new create(input': InputStream, output': OutStream, err': OutStream,
+  new val create(input': InputStream, output': OutStream, err': OutStream,
       exit': {(I32)} val) =>
     input = input'
     output = output'
@@ -40,6 +40,8 @@ class OptionParser
       [ OptionSpec.string("front", "front matter for the card"
           where default' = "")
         OptionSpec.string("back", "back matter for the card"
+          where default' = "")
+        OptionSpec.string("multi", "add multiple cards from a file"
           where default' = "")
         OptionSpec.bool("interactive", "add cards in interactive mode"
           where short' = 'i', default' = false)
@@ -184,10 +186,9 @@ actor Main
     recover CardsDB(consume db) end
 
   fun add(db: CardsDB iso, opts: Options) =>
+    let term = Terminal(env.input, env.out, env.err, env.exitcode)
     if opts.interactive() then
-      AddingInteractive(consume db,
-        Terminal(env.input, env.out, env.err, env.exitcode))
-        .run()
+      AddingInteractive(consume db, term).run()
     elseif (opts.front() != "") and (opts.back() != "") then
       match (consume db).insert(Card(opts.front(), opts.back()))
       | OK => None
@@ -196,8 +197,8 @@ actor Main
         env.exitcode(1)
       end
     elseif opts.multi() != "" then
-      match OpenFile(FilePath(FileAuth(env.root), opts.multi()))
-      | let f: File => AddingFileParser(consume db, f)
+      match recover OpenFile(FilePath(FileAuth(env.root), opts.multi())) end
+      | let f: File iso => AddingFileParser(consume db, term, consume f).apply()
       else
         // TODO: better error reporting
         env.err.print("couldn't open file " + opts.multi())
