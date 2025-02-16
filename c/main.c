@@ -1,4 +1,5 @@
 #include <err.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <math.h>
@@ -107,6 +108,90 @@ cardvec_free(struct cardvec *cv)
 	free(cv->buf);
 	cv->buf = NULL;
 	cv->len = cv->cap = 0;
+}
+
+struct charvec {
+	char *buf;
+	size_t len;
+	size_t cap;
+};
+
+char
+charvec_grow(struct charvec *str)
+{
+	char *newbuf;
+	size_t newcap;
+
+	if (SIZE_MAX/sizeof(char)/3 < str->cap)
+		return 1;
+	newcap = 3*str->cap / 2;
+	if (newcap == 0)
+		newcap = 2;
+
+	if ((newbuf = realloc(str->buf, newcap * sizeof(char))) == NULL)
+		return 1;
+	str->buf = newbuf;
+	str->cap = newcap;
+
+	return 0;
+}
+
+char
+charvec_append(struct charvec *str, char ch)
+{
+	if (str->len >= str->cap)
+		if (charvec_grow(str))
+			return 1;
+	str->buf[str->len++] = ch;
+	return 0;
+}
+
+void
+charvec_free(struct charvec *str)
+{
+	free(str->buf);
+	str->buf = NULL;
+	str->len = str->cap = 0;
+}
+
+int
+parse_matter(int filedes, char **out)
+{
+	char buf[1024];
+	int ret = 0;
+	ssize_t num;
+	enum {
+		INIT, MULTI_FRONT, SINGLE_FRONT, MULTI_BACK, SINGLE_BACK
+	} state = INIT;
+
+read_buf: {
+	num = read(filedes, buf, 1024);
+	if (num < 0) {
+		warn("couldn't read matter");
+		ret = 1;
+		*out = NULL;
+		goto exit;
+	}
+
+	/* TODO: This */
+	*out = NULL;
+	printf("read in\n%.1024s\n", buf);
+
+	if (num == 0)
+		switch (state) {
+		case INIT:
+			break;
+		case MULTI_FRONT:
+		case SINGLE_FRONT:
+			break;
+		case MULTI_BACK:
+		case SINGLE_BACK:
+			break;
+		}
+}
+
+exit:
+	return ret;
 }
 
 struct strvec {
@@ -482,43 +567,43 @@ write_db: {
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_text(setstmt, 2, cptr->back, -1, SQLITE_STATIC);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_int64(setstmt, 3, cptr->tested);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_int(setstmt, 4, cptr->i);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_int(setstmt, 5, cptr->n);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_double(setstmt, 6, cptr->ef);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 	res = sqlite3_bind_int64(setstmt, 7, cptr->id);
 	if (res != SQLITE_OK) {
 		warnx("couldn't bind card db update statement");
 		ret = 1;
-		goto exit;
+		goto exit_write;
 	}
 
 	restarts = 0;
@@ -539,10 +624,12 @@ write_out: {
 		ret = 1;
 		goto exit;
 	}
-	sqlite3_finalize(setstmt);
-	setstmt = NULL;
 }
 
+exit_write:
+	sqlite3_finalize(setstmt);
+	setstmt = NULL;
+	if (ret) goto exit;
 }
 
 	cptr++;
@@ -589,9 +676,121 @@ struct add_state {
 };
 
 int
+add_card(sqlite3 *db, const char *front, const char *back)
+{
+	sqlite3_stmt *stmt;
+	int res, ret, restarts;
+	const char sql[] =
+		"INSERT INTO cards\n"
+		"VALUES (NULL, ?, ?, 0, 0, 0, 2.5)\n";
+
+	res = sqlite3_prepare_v2(db, sql, sizeof sql, &stmt, NULL);
+	if (res != SQLITE_OK) {
+		warnx("couldn't get cards from db: %s", sqlite3_errstr(res));
+		ret = 1;
+		goto exit;
+	}
+
+	res = sqlite3_bind_text(stmt, 1, front, -1, SQLITE_STATIC);
+	if (res != SQLITE_OK) {
+		warnx("couldn't bind card db insert statement");
+		ret = 1;
+		goto finalise;
+	}
+	res = sqlite3_bind_text(stmt, 2, back, -1, SQLITE_STATIC);
+	if (res != SQLITE_OK) {
+		warnx("couldn't bind card db insert statement");
+		ret = 1;
+		goto finalise;
+	}
+
+	restarts = 0;
+write_out: {
+	res = sqlite3_step(stmt);
+	if (res == SQLITE_BUSY && restarts < MAX_RESTARTS) {
+		struct timespec t = {0, 100000}; 
+		restarts++;
+		if (!nanosleep(&t, NULL)) {
+			warn("db was busy and we couldn't sleep");
+			ret = 1;
+			goto exit;
+		}
+		goto write_out;
+	}
+	if (res != SQLITE_DONE) {
+		warnx("couldn't insert new card into db");
+		ret = 1;
+	}
+}
+
+finalise:
+	sqlite3_finalize(stmt);
+exit:
+	return ret;
+}
+
+int
+add_cards(sqlite3 *db, int readin, int promptout)
+{
+	/* TODO: put these in a single sqlite transaction? */
+	while (1) {
+		char *front, *back;
+		int ret;
+
+		if (promptout >= 0)
+			write(promptout, "Front?\n", 7);
+		ret = parse_matter(readin, &front);
+		if (ret < 0) return 1;
+		if (ret > 0) return 0;
+
+		if (promptout >= 0)
+			write(promptout, "Back?\n", 6);
+		ret = parse_matter(readin, &back);
+		if (ret < 0) {
+			free(front);
+			return 1;
+		}
+		if (ret > 1) {
+			warnx("didn't get back matter for card");
+			free(front);
+			return 1;
+		}
+
+		ret = add_card(db, front, back);
+		free(front);
+		free(back);
+		if (ret) return ret;
+	}
+}
+
+int
 add(sqlite3 *db, const struct add_state *state)
 {
-	return 0;
+	size_t i;
+	int ret = 0;
+	for (i = 0; i < state->fronts.len; i++) {
+		ret = add_card(db, state->fronts.buf[i], state->backs.buf[i]);
+		if (ret) goto exit;
+	}
+
+	for (i = 0; i < state->multis.len; i++) {
+		char *front, *back;
+		int fd;
+		if ((fd = open(state->multis.buf[i], O_RDONLY)) == -1) {
+			warn("coudln't open file to add cards");
+			ret = 1;
+			goto exit;
+		}
+
+		ret = add_cards(db, fd, -1);
+		close(fd);
+		if (ret) goto exit;
+	}
+
+	if (state->interactiveset)
+		ret = add_cards(db, fileno(stdin), fileno(stdout));
+exit:
+	return ret;
 }
 
 const char *
@@ -622,9 +821,26 @@ createtables(sqlite3 *db)
 	return 0;
 }
 
+const char *
+optname(const struct option *opts, int optval, const char *opt)
+{
+	static char buf[2] = "\0";
+	while (opts->val != 0) {
+		if (opts->val == optval)
+			return opts->name;
+		opts++;
+	}
+
+	buf[0] = optval;
+	return optval ? buf : opt;
+}
+
 int
 main(int argc, char *argv[])
 {
+	struct test_state teststate = {0};
+	struct add_state addstate = {0};
+	enum { INIT, HAS_FRONT, HAS_BACK } cardstate = INIT;
 	sqlite3 *db = NULL;
 	int ret = 0;
 
@@ -633,11 +849,13 @@ root_opts: {
 	switch (getopt_long(argc, argv, "+:f:", rootopts, NULL)) {
 	case -1: break;
 	case ':':
-		warnx("expected argument for %c\n%s", optopt, rootusage);
+		warnx("expected argument for %s\n%s",
+			optname(rootopts, optopt, argv[optind-1]), rootusage);
 		ret = 1;
 		goto exit;
 	case '?':
-		warnx("unexpected argument %c\n%s", optopt, rootusage);
+		warnx("unexpected argument %s\n%s",
+			optname(rootopts, optopt, argv[optind-1]), rootusage);
 		ret = 1;
 		goto exit;
 	case 'f':
@@ -656,30 +874,38 @@ root_opts: {
 	argv += optind;
 }
 
-	if (argc < 1)
-		errx(1, "expected subcommand\n%s", rootusage);
+	if (argc < 1) {
+		warn("expected subcommand\n%s", rootusage);
+		ret = 1;
+		goto exit;
+	}
 
 choose_subcmd: {
 	char test[] = "test";
 	char add[] = "add";
+	optind = optreset = 1;
 	if (!strcmp(argv[0], test))
 		goto test_opts;
 	if (!strcmp(argv[0], add))
 		goto add_opts;
+	warnx("unexpected subcommand: %s\n%s", argv[0], rootusage);
+	ret = 1;
+	goto exit;
 }
 
 test_opts: {
-	struct test_state teststate = {0};
 	char *endptr;
 	int sqerr;
 	switch (getopt_long(argc, argv, "+:f:n:", testopts, NULL)) {
 	case -1: break;
 	case ':':
-		warnx("expected argument for %c\n%s", optopt, testusage);
+		warnx("expected argument for %s\n%s",
+			optname(testopts, optopt, argv[optind-1]), testusage);
 		ret = 1;
 		goto exit;
 	case '?':
-		warnx("unexpected argument %c\n%s", optopt, testusage);
+		warnx("unexpected argument %s\n%s",
+			optname(testopts, optopt, argv[optind-1]), testusage);
 		ret = 1;
 		goto exit;
 	case 'f':
@@ -738,20 +964,17 @@ test_opts: {
 }
 
 add_opts: {
-	struct add_state addstate = {0};
-	enum { INIT, HAS_FRONT, HAS_BACK } cardstate;
-	char *name;
-	int sqerr, idx;
-	switch (getopt_long(argc, argv, "+:f:i:", addopts, &idx)) {
+	int sqerr;
+	switch (getopt_long(argc, argv, "+:f:i", addopts, NULL)) {
 	case -1: break;
 	case ':':
 		warnx("expected argument for %s\n%s",
-			addopts[idx].name, addusage);
+			optname(addopts, optopt, argv[optind-1]), addusage);
 		ret = 1;
 		goto exit_add;
 	case '?':
 		warnx("unexpected argument %s\n%s",
-			addopts[idx].name, addusage);
+			optname(addopts, optopt, argv[optind-1]), addusage);
 		ret = 1;
 		goto exit_add;
 	case 'f':
@@ -803,7 +1026,7 @@ add_opts: {
 			cardstate = HAS_BACK;
 			break;
 		case HAS_FRONT:
-			if (strvec_append(&addstate.fronts, optarg)) {
+			if (strvec_append(&addstate.backs, optarg)) {
 				warn("couldn't append to strvec");
 				ret = 1;
 				goto exit_add;
@@ -825,6 +1048,19 @@ add_opts: {
 	}
 	argc -= optind;
 	argv += optind;
+
+	if (cardstate != INIT) {
+		warnx("--fronts and --backs must be balanced");
+		ret = 1;
+		goto exit_add;
+	}
+
+	if (!(addstate.fronts.len || addstate.backs.len || addstate.multis.len)
+			&& !addstate.interactiveset) {
+		warnx("expected at least one source of cards to add");
+		ret = 1;
+		goto exit_add;
+	}
 
 	if (argc > 0) {
 		warnx("unexpected extra arguments on command line");
