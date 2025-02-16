@@ -44,14 +44,17 @@ class iso WaitForInputNotifier is InputNotify
 actor TestingOrchestrator
   let db: CardsDB
   var cards: Seq[Card]
-  var card: (None | Card)
+  var fails: Array[Card] = Array[Card]
+  var card: (None | Card) = None
   let term: Terminal
 
   new create(db': CardsDB iso, cards': Seq[Card] iso, term': Terminal) =>
     db = consume db'
     cards = consume cards'
-    card = None
     term = term'
+
+  be retry_fails() =>
+    None
 
   be test() =>
     /* TODO: Cap if n is set */
@@ -63,6 +66,7 @@ actor TestingOrchestrator
           end
           cards.pop()?
         else
+          retry_fails()
           return
         end
       | let c: Card => c
