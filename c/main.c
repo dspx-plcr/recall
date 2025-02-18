@@ -122,13 +122,13 @@ charvec_grow(struct charvec *str)
 	char *newbuf;
 	size_t newcap;
 
-	if (SIZE_MAX/sizeof(char)/3 < str->cap)
+	if (SIZE_MAX/3 < str->cap)
 		return 1;
 	newcap = 3*str->cap / 2;
 	if (newcap == 0)
 		newcap = 2;
 
-	if ((newbuf = realloc(str->buf, newcap * sizeof(char))) == NULL)
+	if ((newbuf = realloc(str->buf, newcap)) == NULL)
 		return 1;
 	str->buf = newbuf;
 	str->cap = newcap;
@@ -146,6 +146,31 @@ charvec_append(struct charvec *str, char ch)
 	return 0;
 }
 
+char
+charvec_join(struct charvec *str, char *s)
+{
+	size_t i, n = strlen(s);
+	if (n == SIZE_MAX)
+		return 1;
+
+	n++;
+	if (str->cap - str->len < n) {
+		char *newbuf;
+		if (SIZE_MAX - str->len < n)
+			return 1;
+		if ((newbuf = realloc(str->buf, str->len + n)) == NULL)
+			return 1;
+		str->buf = newbuf;
+		str->cap = str->len + n;
+	}
+
+	for (i = 0; i < n; i++)
+		str->buf[str->len + i] = s[i];
+	str->len += n;
+
+	return 0;
+}
+
 void
 charvec_free(struct charvec *str)
 {
@@ -157,15 +182,21 @@ charvec_free(struct charvec *str)
 int
 parse_matter(int filedes, char **out)
 {
-	char buf[1024];
+	/* TODO: non static would be nice */
+	static char buf[1024];
+	static char *pos = NULL;
+	static ssize_t num = 0;
+	struct charvec str = {0};
 	int ret = 0;
-	ssize_t num;
-	enum {
-		INIT, MULTI_FRONT, SINGLE_FRONT, MULTI_BACK, SINGLE_BACK
-	} state = INIT;
+	enum { INIT, SINGLE, MULTI } state = INIT;
+
+	if (num > 0)
+		goto parse;
 
 read_buf: {
-	num = read(filedes, buf, 1024);
+	pos = buf;
+	num = read(filedes, buf, 1023);
+	buf[num] = 0;
 	if (num < 0) {
 		warn("couldn't read matter");
 		ret = 1;
@@ -173,24 +204,59 @@ read_buf: {
 		goto exit;
 	}
 
-	/* TODO: This */
-	*out = NULL;
-	printf("read in\n%.1024s\n", buf);
-
 	if (num == 0)
 		switch (state) {
 		case INIT:
-			break;
-		case MULTI_FRONT:
-		case SINGLE_FRONT:
-			break;
-		case MULTI_BACK:
-		case SINGLE_BACK:
-			break;
+			*out = NULL;
+			ret = 1;
+			goto exit;
+		case SINGLE:
+			*out = str.buf;
+			str.buf = NULL;
+			goto exit;
+		case MULTI:
+			ret = -1;
+			goto exit;
 		}
 }
 
+parse: {
+	char *line;
+	switch (state) {
+	case INIT:
+		/* TODO: allow split messages here? */
+		if (num >= 3 && !strncmp(pos, "\"\"\"", 3)) {
+			pos += 3;
+			num -= 3;
+			state = MULTI;
+			goto parse;
+		}
+		state = SINGLE;
+		goto parse;
+	case SINGLE:
+		line = strsep(&pos, "\n");
+		if (!line)
+			goto read_buf;
+		if (charvec_join(&str, line)) {
+			warn("couldn't allocate space for matter");
+			ret = -1;
+			goto exit;
+		}
+		if (pos == NULL) num = 0;
+		else num -= pos - line;
+		if (num <= 0)
+			goto read_buf;
+		*out = str.buf;
+		str.buf = NULL;
+		goto exit;
+	case MULTI:
+		/* TODO: This */
+		break;
+	}
+}
+
 exit:
+	charvec_free(&str);
 	return ret;
 }
 
@@ -310,7 +376,7 @@ read_one: {
 	card.tested = sqlite3_column_int64(getstmt, 3);
 	card.i = sqlite3_column_int(getstmt, 4);
 	if (card.tested + NSEC_IN_DAY*card.i > now.tv_sec)
-		;// TODO: goto read_one;
+		goto read_one;
 
 	card.id = sqlite3_column_int64(getstmt, 0);
 	card.n = sqlite3_column_int(getstmt, 5);
@@ -679,7 +745,7 @@ int
 add_card(sqlite3 *db, const char *front, const char *back)
 {
 	sqlite3_stmt *stmt;
-	int res, ret, restarts;
+	int res, ret = 0, restarts;
 	const char sql[] =
 		"INSERT INTO cards\n"
 		"VALUES (NULL, ?, ?, 0, 0, 0, 2.5)\n";
@@ -734,7 +800,7 @@ add_cards(sqlite3 *db, int readin, int promptout)
 {
 	/* TODO: put these in a single sqlite transaction? */
 	while (1) {
-		char *front, *back;
+		char *front = NULL, *back = NULL;
 		int ret;
 
 		if (promptout >= 0)
@@ -750,7 +816,7 @@ add_cards(sqlite3 *db, int readin, int promptout)
 			free(front);
 			return 1;
 		}
-		if (ret > 1) {
+		if (ret > 0) {
 			warnx("didn't get back matter for card");
 			free(front);
 			return 1;
@@ -817,8 +883,48 @@ exit:
 int
 createtables(sqlite3 *db)
 {
-	/* TODO: This */
-	return 0;
+	sqlite3_stmt *stmt;
+	int res, ret = 0, restarts;
+	const char sql[] =
+		"CREATE TABLE IF NOT EXISTS cards (\n"
+		"  id INTEGER PRIMARY KEY,\n"
+		"  front TEXT UNIQUE,\n"
+		"  back TEXT,\n"
+		"  tested INTEGER,\n"
+		"  i INTEGE,\n"
+		"  n INTEGER,\n"
+		"  ef REAL)";
+
+	res = sqlite3_prepare_v2(db, sql, sizeof sql, &stmt, NULL);
+	if (res != SQLITE_OK) {
+		warnx("couldn't create db: %s", sqlite3_errstr(res));
+		ret = 1;
+		goto exit;
+	}
+
+	restarts = 0;
+write_out: {
+	res = sqlite3_step(stmt);
+	if (res == SQLITE_BUSY && restarts < MAX_RESTARTS) {
+		struct timespec t = {0, 100000}; 
+		restarts++;
+		if (!nanosleep(&t, NULL)) {
+			warn("db was busy and we couldn't sleep");
+			ret = 1;
+			goto exit;
+		}
+		goto write_out;
+	}
+	if (res != SQLITE_DONE) {
+		warnx("couldn't create db");
+		ret = 1;
+	}
+}
+
+finalise:
+	sqlite3_finalize(stmt);
+exit:
+	return ret;
 }
 
 const char *
@@ -1018,7 +1124,7 @@ add_opts: {
 	case ADD_OPT_BACK:
 		switch (cardstate) {
 		case INIT:
-			if (strvec_append(&addstate.fronts, optarg)) {
+			if (strvec_append(&addstate.backs, optarg)) {
 				warn("couldn't append to strvec");
 				ret = 1;
 				goto exit_add;
