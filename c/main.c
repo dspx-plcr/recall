@@ -14,7 +14,7 @@
 #include <readline/readline.h>
 #include <sqlite3.h>
 
-#define	NSEC_IN_DAY (1000000000ULL*60*60*24)
+#define	SEC_IN_DAY (60*60*24)
 #define MAX_RESTARTS 10
 
 /* TODO: These */
@@ -375,7 +375,7 @@ read_one: {
 
 	card.tested = sqlite3_column_int64(getstmt, 3);
 	card.i = sqlite3_column_int(getstmt, 4);
-	if (card.tested + NSEC_IN_DAY*card.i > now.tv_sec)
+	if (card.tested + SEC_IN_DAY*card.i > now.tv_sec)
 		goto read_one;
 
 	card.id = sqlite3_column_int64(getstmt, 0);
@@ -421,7 +421,9 @@ sort_by_time: {
 	if (cards.len == 0)
 		goto get_num_test;
 
-	idxs = malloc(sizeof(struct sort_idxs)*(size_t)ceil(log2(cards.len)));
+	/* TODO: actually compute this */
+	idxs = malloc(sizeof(struct sort_idxs) *
+		(size_t)ceil(cards.len*log2(cards.len)));
 	sorted = malloc(sizeof(struct card) * cards.len);
 	cs = malloc(sizeof(struct small_card)*cards.len);
 	if (!(idxs && sorted && cs)) {
@@ -496,13 +498,14 @@ partition: {
 	cs[hi] = cs[j];
 	cs[j] = tmp;
 
-	idxs[nidxs].lo = lo;
-	idxs[nidxs].hi = j - 1;
-	nidxs++;
+	if (j > 0) {
+		idxs[nidxs].lo = lo;
+		idxs[nidxs].hi = j - 1;
+		nidxs++;
+	}
 	idxs[nidxs].lo = j + 1;
 	idxs[nidxs].hi = hi;
 	nidxs++;
-
 	goto pick_pivot;
 }
 
@@ -522,19 +525,21 @@ get_num_test: {
 		goto exit;
 	if (!state->numset || state->num > cards.len)
 		num = cards.len;
+	else
+		num = state->num;
 	cptr = cards.buf;
 }
 
 test_one: {
 	unsigned long score;
 
-	if (!--num) {
+	if (!num--) {
 		if (failed.len == 0)
 			goto exit;
 		cards = failed;
-		num = cards.len;
+		failed.buf = NULL;
 		cardvec_free(&failed);
-		goto test_one;
+		goto get_num_test;
 	}
 
 	printf("\t%s\n", cptr->front);
@@ -981,7 +986,7 @@ root_opts: {
 }
 
 	if (argc < 1) {
-		warn("expected subcommand\n%s", rootusage);
+		warnx("expected subcommand\n%s", rootusage);
 		ret = 1;
 		goto exit;
 	}
@@ -1051,11 +1056,15 @@ test_opts: {
 	if (argc > 0) {
 		warnx("unexpected extra arguments on command line");
 		fputc('\t', stderr);
-		while (argv++, argc--) {
+		for (; argc--; argv++) {
 			fprintf(stderr, "%s", argv[0]);
 			if (argc)
 				fputc(' ', stderr);
 		}
+		fputc('\n', stderr);
+		warnx("%s", testusage);
+		ret = 1;
+		goto exit;
 	}
 
 	if (db == NULL)
@@ -1171,11 +1180,15 @@ add_opts: {
 	if (argc > 0) {
 		warnx("unexpected extra arguments on command line");
 		fputc('\t', stderr);
-		while (argv++, argc--) {
+		for (; argc--; argv++) {
 			fprintf(stderr, "%s", argv[0]);
 			if (argc)
 				fputc(' ', stderr);
 		}
+		fputc('\n', stderr);
+		warnx("%s", addusage);
+		ret = 1;
+		goto exit;
 	}
 
 	if (db == NULL)
