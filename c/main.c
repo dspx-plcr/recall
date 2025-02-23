@@ -592,6 +592,11 @@ update_card: {
 	}
 	cptr->tested = tested.tv_sec;
 
+	q = 5 - score;
+	cptr->ef = cptr->ef + (0.1 - (q * (0.08 + (q * 0.02))));
+	if (cptr->ef < 1.3)
+		cptr->ef = 1.3;
+
 	if (score < 3) {
 		cptr->i = 1;
 		cptr->n = 0;
@@ -614,11 +619,6 @@ update_card: {
 		}
 		cptr->n = cptr->n + 1;
 	}
-
-	q = 5 - score;
-	cptr->ef = cptr->ef + (0.1 - (q * (0.08 + (q * 0.02))));
-	if (cptr->ef < 1.3)
-		cptr->ef = 1.3;
 }
 
 write_db: {
