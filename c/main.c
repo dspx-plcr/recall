@@ -828,6 +828,7 @@ add_cards(sqlite3 *db, int readin, int promptout)
 		}
 
 		ret = add_card(db, front, back);
+		if (!ret) ret = add_card(db, back, front);
 		free(front);
 		free(back);
 		if (ret) return ret;
@@ -841,6 +842,8 @@ add(sqlite3 *db, const struct add_state *state)
 	int ret = 0;
 	for (i = 0; i < state->fronts.len; i++) {
 		ret = add_card(db, state->fronts.buf[i], state->backs.buf[i]);
+		if (!ret) ret = add_card(
+				db, state->backs.buf[i], state->fronts.buf[i]);
 		if (ret) goto exit;
 	}
 
