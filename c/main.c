@@ -39,10 +39,10 @@ edit_card(struct card *card)
 	size_t len;
 	int ret = 0;
 
-	fprintf(stdout, "Card %llu\n", card->id);
+	fprintf(stdout, "Card %" PRIu64 "\n", card->id);
 	fprintf(stdout, "  - front: %s\n", card->front);
 	fprintf(stdout, "  - back: %s\n", card->back);
-	fprintf(stdout, "  - tested: %lld\n", card->tested);
+	fprintf(stdout, "  - tested: %" PRIu64 "\n", card->tested);
 	fprintf(stdout, "  - [i: %" PRIi32 " | n: %" PRIi32 " | ef: %lf]\n",
 		card->i, card->n, card->ef);
 
@@ -351,7 +351,7 @@ prepare_get: {
 	restarts = 0;
 read_one: {
 	struct card card;
-	const char *str;
+	const unsigned char *str;
 	int size; 
 
 	res = sqlite3_step(getstmt);
@@ -997,7 +997,7 @@ root_opts: {
 choose_subcmd: {
 	char test[] = "test";
 	char add[] = "add";
-	optind = optreset = 1;
+	optind = 1;
 	if (!strcmp(argv[0], test))
 		goto test_opts;
 	if (!strcmp(argv[0], add))
