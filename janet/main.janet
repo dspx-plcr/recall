@@ -105,6 +105,8 @@
     (print "Back?")
     (def back (file/read stdin :line))
     (if (nil? back) (break))
+    (def front (string/trimr front "\n"))
+    (def back (string/trimr back "\n"))
     (add-card front back)
     (add-card back front)))
 
