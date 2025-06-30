@@ -10,6 +10,7 @@
 #	  (this should also be possible from the testing command, to fix things
 #	  when we notice them)
 
+# TODO: parse-all instead of parse?
 (import sqlite3 :as sql)
 (import cmd)
 
@@ -46,7 +47,8 @@
             [--back] (tuple :string)))
 (def- adddoc "add new untested cards to the databse")
 (def- edit-spec
-  (cmd/spec [--file -f] (optional :file)))
+  (cmd/spec [--file -f] (optional :file)
+            [--id -i] (optional :int+)))
 (def- edit-doc "manually edit cards in the database")
 # TODO: default help here doesn't display subcommands
 (def- toplevel-spec
@@ -58,6 +60,7 @@
     ~(,(string label)
       (do (setdyn *args*
             (tuple/join
+              # TODO: figure out if this should be a keyword, e.g., :add
               (tuple (string (get (dyn *args*) 0) " " ,(string label)))
               (tuple/slice ,rest 1)))
           (try (put (cmd/parse ,(symbol label "-spec") (cmd/args)) :cmd ',label)
@@ -111,8 +114,7 @@
     (add-card back front)))
 
 (defn- read-score []
-  (var res nil)
-  (while true
+  (forever
     (print "How did you do?\n"
       "0: Complete failure to recall the information\n"
       "1: Incorrect, but upon seeing the answer, it seemed familiar\n"
@@ -121,11 +123,50 @@
       "4: Correct, after some hesitation\n"
       "5: Correct with perfect recall")
     (def score (file/read stdin :line))
-    (if (nil? score) (break))
-    (def score (try (parse score) ([_ _])))
-    (if (and (number? score) (>= score 0) (<= score 5))
-      (do (set res score) (break))))
-  res)
+    (if (nil? score)
+      (do (yield :empty) (break)))
+    (def score (string/trimr score "\n"))
+    (if (= "e" score)
+      (yield :edit)
+      (let [score (try (parse score) ([_ _]))]
+        (if (and (number? score) (>= score 0) (<= score 5))
+          (do (yield score) (break)))))))
+
+(defn- edit-card [card]
+  (forever
+    (print "")
+    (print "Card " (card :id))
+    (print "  - front: " (card :front))
+    (print "  - back: " (card :back))
+    (print "  - tested: " (card :tested))
+    (print "  - [i: " (card :i) " | n: " (card :n) " | ef: " (card :ef) "]")
+    (print "")
+    (print "[q:quit, f/b/t/i/n/e: edit card attr]")
+
+    (def line (file/read stdin :line))
+    (if (nil? line) (break))
+    (def line (string/trimr line "\n"))
+    (defn parse-line []
+      (as?-> (getline) l (string/trim l "\n") (try (parse l) ([_ _] nil))))
+    (defn parse-u64 []
+      (as?-> (getline) l
+        (string/trim l "\n")
+        (try (int/to-number (int/u64 l))
+             ([msg _] (print msg)))))
+    (case line
+      "q" (break)
+      # TODO: this (f and b)
+      "t" (do (prin "new last tested time: ")
+            (->> (parse-u64) (put card :tested)))
+      "n" (do (prin "new number of times correct: ")
+            (->> (parse-u64) (put card :n)))
+      "i" (do (prin "new inter-repition interval:  ")
+            (->> (parse-u64) (put card :i)))
+      "e" (do (prin "new easiness factor: ")
+            (as?-> (parse-line) e
+              (if (and (number? e) (<= 1.3 e))
+                (put card :ef e)
+                (print "expected a number >= 1.3, got " e)))))))
 
 (defn- test
   [&keys {:num num}]
@@ -148,7 +189,14 @@
     (print "\t" (card :front))
     (if (nil? (file/read stdin :line)) (break))
     (print "\t" (card :back))
-    (def score (read-score))
+    (def score (do
+      (def f (fiber/new read-score))
+      (defn lp [f val]
+        (case val
+          :edit (do (edit-card card) (lp f (resume f)))
+          :empty nil
+          val))
+      (lp f (resume f))))
     (if (nil? score) (break))
 
     (put card :tested (os/time))
@@ -179,8 +227,33 @@
     (array/remove cards 0)))
 
 (defn- edit
-  []
-  (print "edit!"))
+  [&keys {:id id}]
+  (def db (dyn 'db))
+  (def cards
+    (try
+      (sql/eval db
+        "SELECT id, front, back, tested, i, n, ef FROM cards WHERE id = ?"
+        (tuple id))
+      ([msg _]
+       (print "couldn't get card for editing: " msg)
+       (os/exit 1))))
+
+  (if (empty? cards)
+    (do (print "didn't find any cards with id " id) (break)))
+
+  (each card cards
+    (def card (table ;(kvs card)))
+    (edit-card card)
+    (try
+      (sql/eval db
+        "UPDATE cards SET
+          front = :front, back = :back, tested = :tested,
+          i = :i, n = :n, ef = :ef
+         WHERE id = :id"
+        card)
+      ([msg _]
+       (print "coudln't update card in db: " msg)
+       (os/exit 1)))))
 
 (defn main [& args]
   (setdyn *args* args)
