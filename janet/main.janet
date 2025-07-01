@@ -153,9 +153,14 @@
         (string/trim l "\n")
         (try (int/to-number (int/u64 l))
              ([msg _] (print msg)))))
+    (defn edit-line [line]
+      (let [l (string/trimr (getline) "\n")] (if (empty? l) nil l)))
     (case line
       "q" (break)
-      # TODO: this (f and b)
+      "f" (do (prin "new front-matter: ")
+            (-?>> (edit-line (card :front)) (put card :front)))
+      "b" (do (prin "new back-matter: ")
+            (-?>> (edit-line (card :back)) (put card :back)))
       "t" (do (prin "new last tested time: ")
             (->> (parse-u64) (put card :tested)))
       "n" (do (prin "new number of times correct: ")
