@@ -185,7 +185,8 @@
        (print "failed to get cards from db: " msg)
        (os/exit 1)))
     (filter |(< (+ (days->secs ($ :i)) ($ :tested)) time))
-    (sort-by :tested)
+    (map |(table ;(kvs $)))
+    (sort-by |($ :tested))
     (take num)
     (map |(table ;(kvs $)))))
 
